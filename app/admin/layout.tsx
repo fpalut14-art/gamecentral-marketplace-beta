@@ -1,365 +1,324 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import {
-  addDoc,
-  collection,
-  deleteDoc,
-  doc,
-  getDocs,
-  updateDoc,
-} from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import { onAuthStateChanged } from "firebase/auth";
+import { auth } from "@/lib/firebase";
+import { getUserProfile, isAdmin } from "@/lib/guards";
 
-type Product = {
-  id: string;
-  title?: string;
-  price?: number;
-  category?: string;
-  status?: "pending" | "active" | "rejected";
-  seller?: string;
-  sellerId?: string;
-  createdAt?: string;
-  imageBase64?: string;
-};
+const navItems = [
+  ["/admin", "📊", "Dashboard"],
+  ["/admin/users", "👥", "Kullanıcılar"],
+  ["/admin/seller-requests", "🛒", "Satıcı Başvuruları"],
+  ["/admin/listings", "📦", "İlan Yönetimi"],
+  ["/admin/orders", "💳", "Siparişler"],
+  ["/admin/ads", "📢", "Reklam Yönetimi"],
+  ["/admin/reports", "🚨", "Raporlar"],
+  ["/admin/support", "🎧", "Canlı Destek"],
+  ["/admin/logs", "🧠", "Sistem Logları"],
+];
 
-export default function AdminListingsPage() {
-  const [products, setProducts] = useState<Product[]>([]);
-  const [loading, setLoading] = useState(true);
+export default function AdminLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  const router = useRouter();
+  const pathname = usePathname();
 
-  async function loadProducts() {
-    try {
-      setLoading(true);
-
-      const snap = await getDocs(collection(db, "products"));
-
-      const data = snap.docs.map((item) => ({
-        id: item.id,
-        ...(item.data() as Omit<Product, "id">),
-      }));
-
-      setProducts(data);
-    } catch (error) {
-      console.error("İlanlar çekilemedi:", error);
-      alert("İlanlar çekilemedi.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function createNotification(
-    userId: string,
-    title: string,
-    message: string
-  ) {
-    await addDoc(collection(db, "notifications"), {
-      userId,
-      title,
-      message,
-      type: "listing",
-      read: false,
-      createdAt: new Date().toISOString(),
-    });
-  }
-
-  async function updateStatus(
-    id: string,
-    status: "pending" | "active" | "rejected"
-  ) {
-    try {
-      const product = products.find((item) => item.id === id);
-
-      await updateDoc(doc(db, "products", id), {
-        status,
-        updatedAt: new Date().toISOString(),
-      });
-
-      if (product?.sellerId) {
-        const title =
-          status === "active"
-            ? "İlanın onaylandı"
-            : status === "rejected"
-            ? "İlanın reddedildi"
-            : "İlanın askıya alındı";
-
-        const message = `${product.title || "İlan"} durumu güncellendi: ${status}`;
-
-        await createNotification(product.sellerId, title, message);
-      }
-
-      await loadProducts();
-    } catch (error) {
-      console.error("Durum güncelleme hatası:", error);
-      alert("İlan durumu güncellenemedi.");
-    }
-  }
-
-  async function removeProduct(id: string) {
-    const ok = confirm("Bu ilanı kalıcı olarak silmek istiyor musun?");
-    if (!ok) return;
-
-    try {
-      const product = products.find((item) => item.id === id);
-
-      await deleteDoc(doc(db, "products", id));
-
-      if (product?.sellerId) {
-        await createNotification(
-          product.sellerId,
-          "İlanın silindi",
-          `${product.title || "İlan"} admin tarafından silindi.`
-        );
-      }
-
-      await loadProducts();
-    } catch (error) {
-      console.error("İlan silme hatası:", error);
-      alert("İlan silinemedi.");
-    }
-  }
+  const [checking, setChecking] = useState(true);
 
   useEffect(() => {
-    loadProducts();
-  }, []);
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      const profile = await getUserProfile(user);
+
+      if (!isAdmin(profile)) {
+        router.push("/");
+        return;
+      }
+
+      setChecking(false);
+    });
+
+    return () => unsub();
+  }, [router]);
+
+  if (checking) {
+    return (
+      <main style={checkingPage}>
+        <div style={checkingCard}>
+          <h1 style={{ color: "#ffd400", margin: 0 }}>GAMECENTRAL</h1>
+          <p style={{ color: "#94a3b8" }}>Admin yetkisi kontrol ediliyor...</p>
+        </div>
+      </main>
+    );
+  }
 
   return (
-    <div>
-      <div style={top}>
+    <div style={shell}>
+      <aside style={sidebar}>
         <div>
-          <h1 style={title}>İlan Yönetimi</h1>
-          <p style={muted}>
-            İlanları onayla, reddet, askıya al veya sil.
-          </p>
+          <Link href="/admin" style={brand}>
+            GAME<span style={{ color: "#ffd400" }}>CENTRAL</span>
+          </Link>
+
+          <div style={adminBadge}>ADMIN COMMAND CENTER</div>
+
+          <nav style={nav}>
+            {navItems.map(([href, icon, label]) => {
+              const active =
+                href === "/admin"
+                  ? pathname === "/admin"
+                  : pathname?.startsWith(href);
+
+              return (
+                <Link
+                  key={href}
+                  href={href}
+                  style={active ? navItemActive : navItem}
+                >
+                  <span style={navIcon}>{icon}</span>
+                  <span>{label}</span>
+                </Link>
+              );
+            })}
+          </nav>
         </div>
 
-        <button onClick={loadProducts} style={refresh}>
-          Yenile
-        </button>
-      </div>
-
-      {loading && <p style={muted}>İlanlar yükleniyor...</p>}
-
-      {!loading && products.length === 0 && (
-        <div style={empty}>Henüz ilan yok.</div>
-      )}
-
-      <div style={grid}>
-        {products.map((product) => (
-          <article key={product.id} style={card}>
-            <div style={imageBox}>
-              {product.imageBase64 ? (
-                <img
-                  src={product.imageBase64}
-                  alt={product.title || "İlan"}
-                  style={image}
-                />
-              ) : (
-                "GAMECENTRAL"
-              )}
-            </div>
-
-            <span style={getStatusStyle(product.status)}>
-              {getStatusLabel(product.status)}
+        <div style={sideBottom}>
+          <div style={systemBox}>
+            <small style={{ color: "#94a3b8" }}>Sistem Durumu</small>
+            <strong style={{ color: "#22c55e" }}>Aktif</strong>
+            <span style={{ color: "#64748b", fontSize: 12 }}>
+              Beta panel çalışıyor
             </span>
+          </div>
 
-            <h3 style={{ margin: 0 }}>
-              {product.title || "Başlıksız İlan"}
-            </h3>
+          <Link href="/" style={siteBtn}>
+            Ana Siteye Dön
+          </Link>
+        </div>
+      </aside>
 
-            <p style={muted}>Kategori: {product.category || "Yok"}</p>
-            <p style={muted}>Satıcı: {product.seller || "Bilinmiyor"}</p>
-            <p style={muted}>Seller ID: {product.sellerId || "Yok"}</p>
+      <section style={workspace}>
+        <header style={topbar}>
+          <div>
+            <span style={eyebrow}>GAMECENTRAL ADMIN</span>
+            <h1 style={pageTitle}>{getPageTitle(pathname || "/admin")}</h1>
+          </div>
 
-            <strong style={price}>₺{product.price || 0}</strong>
+          <div style={topActions}>
+            <Link href="/" style={ghostBtn}>
+              Siteyi Gör
+            </Link>
 
-            <div style={actions}>
-              <button
-                onClick={() => updateStatus(product.id, "active")}
-                style={approveBtn}
-              >
-                Onayla
-              </button>
+            <button
+              type="button"
+              style={refreshBtn}
+              onClick={() => window.location.reload()}
+            >
+              Yenile
+            </button>
+          </div>
+        </header>
 
-              <button
-                onClick={() => updateStatus(product.id, "rejected")}
-                style={rejectBtn}
-              >
-                Reddet
-              </button>
-
-              <button
-                onClick={() => updateStatus(product.id, "pending")}
-                style={pendingBtn}
-              >
-                Askıya Al
-              </button>
-
-              <button
-                onClick={() => removeProduct(product.id)}
-                style={deleteBtn}
-              >
-                Sil
-              </button>
-            </div>
-          </article>
-        ))}
-      </div>
+        <main style={content}>{children}</main>
+      </section>
     </div>
   );
 }
 
-function getStatusLabel(status?: string) {
-  if (status === "active") return "Aktif";
-  if (status === "rejected") return "Reddedildi";
-  if (status === "pending") return "Onay Bekliyor";
-  return "Durum Yok";
+function getPageTitle(pathname: string) {
+  if (pathname.includes("/users")) return "Kullanıcı Yönetimi";
+  if (pathname.includes("/seller-requests")) return "Satıcı Başvuruları";
+  if (pathname.includes("/listings")) return "İlan Yönetimi";
+  if (pathname.includes("/orders")) return "Sipariş Yönetimi";
+  if (pathname.includes("/ads")) return "Reklam Yönetimi";
+  if (pathname.includes("/reports")) return "Rapor Merkezi";
+  if (pathname.includes("/support")) return "Destek Merkezi";
+  if (pathname.includes("/logs")) return "Sistem Logları";
+  return "Yönetim Paneli";
 }
 
-function getStatusStyle(status?: string): React.CSSProperties {
-  const base: React.CSSProperties = {
-    width: "fit-content",
-    padding: "7px 10px",
-    borderRadius: 999,
-    fontWeight: 900,
-    fontSize: 13,
-  };
-
-  if (status === "active") {
-    return {
-      ...base,
-      background: "rgba(34,197,94,0.12)",
-      color: "#22c55e",
-    };
-  }
-
-  if (status === "rejected") {
-    return {
-      ...base,
-      background: "rgba(239,68,68,0.12)",
-      color: "#ef4444",
-    };
-  }
-
-  return {
-    ...base,
-    background: "rgba(255,212,0,0.12)",
-    color: "#ffd400",
-  };
-}
-
-const top: React.CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "center",
-  marginBottom: 28,
-};
-
-const title: React.CSSProperties = {
-  fontSize: 34,
-  margin: 0,
-};
-
-const muted: React.CSSProperties = {
-  color: "#94a3b8",
-};
-
-const refresh: React.CSSProperties = {
-  padding: "12px 18px",
-  borderRadius: 12,
-  border: "1px solid rgba(255,212,0,0.35)",
-  background: "rgba(255,212,0,0.09)",
-  color: "#ffd400",
-  fontWeight: 900,
-  cursor: "pointer",
-};
-
-const empty: React.CSSProperties = {
-  padding: 20,
-  borderRadius: 16,
-  background: "#101827",
-  color: "#94a3b8",
-};
-
-const grid: React.CSSProperties = {
+const checkingPage: React.CSSProperties = {
+  minHeight: "100vh",
+  background:
+    "radial-gradient(circle at top, rgba(255,212,0,0.12), transparent 30%), #05060f",
+  color: "white",
   display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
-  gap: 18,
+  placeItems: "center",
 };
 
-const card: React.CSSProperties = {
-  padding: 18,
-  borderRadius: 18,
-  background: "#101827",
-  border: "1px solid #263244",
+const checkingCard: React.CSSProperties = {
+  padding: 30,
+  borderRadius: 24,
+  background: "#0f172a",
+  border: "1px solid rgba(255,255,255,0.08)",
+  textAlign: "center",
+};
+
+const shell: React.CSSProperties = {
+  minHeight: "100vh",
+  background:
+    "radial-gradient(circle at top left, rgba(255,212,0,0.08), transparent 26%), #03040a",
+  color: "white",
+  display: "grid",
+  gridTemplateColumns: "310px minmax(0, 1fr)",
+};
+
+const sidebar: React.CSSProperties = {
+  minHeight: "100vh",
+  position: "sticky",
+  top: 0,
+  alignSelf: "start",
+  padding: 24,
+  background:
+    "linear-gradient(180deg, rgba(15,23,42,0.98), rgba(3,4,10,0.98))",
+  borderRight: "1px solid rgba(255,255,255,0.08)",
+  display: "flex",
+  flexDirection: "column",
+  justifyContent: "space-between",
+};
+
+const brand: React.CSSProperties = {
+  color: "white",
+  textDecoration: "none",
+  fontSize: 28,
+  fontWeight: 900,
+  letterSpacing: 1,
+};
+
+const adminBadge: React.CSSProperties = {
+  marginTop: 12,
+  display: "inline-block",
+  padding: "8px 12px",
+  borderRadius: 999,
+  color: "#ffd400",
+  background: "rgba(255,212,0,0.08)",
+  border: "1px solid rgba(255,212,0,0.2)",
+  fontSize: 12,
+  fontWeight: 900,
+  letterSpacing: 1,
+};
+
+const nav: React.CSSProperties = {
+  marginTop: 34,
+  display: "grid",
+  gap: 10,
+};
+
+const navItem: React.CSSProperties = {
+  height: 50,
+  borderRadius: 15,
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+  padding: "0 16px",
+  color: "#cbd5e1",
+  background: "rgba(255,255,255,0.035)",
+  border: "1px solid rgba(255,255,255,0.04)",
+  textDecoration: "none",
+  fontWeight: 900,
+};
+
+const navItemActive: React.CSSProperties = {
+  ...navItem,
+  color: "#05060f",
+  background: "linear-gradient(135deg, #ffd400, #ffb800)",
+  boxShadow: "0 12px 32px rgba(255,212,0,0.16)",
+};
+
+const navIcon: React.CSSProperties = {
+  width: 24,
+  textAlign: "center",
+};
+
+const sideBottom: React.CSSProperties = {
   display: "grid",
   gap: 14,
 };
 
-const imageBox: React.CSSProperties = {
-  height: 190,
-  borderRadius: 16,
-  overflow: "hidden",
+const systemBox: React.CSSProperties = {
+  padding: 16,
+  borderRadius: 18,
+  background: "rgba(255,255,255,0.035)",
+  border: "1px solid rgba(255,255,255,0.06)",
+  display: "grid",
+  gap: 5,
+};
+
+const siteBtn: React.CSSProperties = {
+  height: 52,
+  borderRadius: 15,
+  background: "#ffd400",
+  color: "#05060f",
   display: "grid",
   placeItems: "center",
-  background:
-    "radial-gradient(circle, rgba(255,212,0,0.16), transparent 60%), #090b11",
-  color: "rgba(255,212,0,0.55)",
+  textDecoration: "none",
   fontWeight: 900,
 };
 
-const image: React.CSSProperties = {
-  width: "100%",
-  height: "100%",
-  objectFit: "cover",
+const workspace: React.CSSProperties = {
+  minWidth: 0,
+  padding: 26,
 };
 
-const price: React.CSSProperties = {
-  color: "#ffd400",
-  fontSize: 28,
-};
-
-const actions: React.CSSProperties = {
+const topbar: React.CSSProperties = {
+  minHeight: 96,
+  padding: "22px 26px",
+  borderRadius: 24,
+  background: "linear-gradient(135deg, rgba(15,23,42,0.96), rgba(3,4,10,0.96))",
+  border: "1px solid rgba(255,255,255,0.08)",
   display: "flex",
-  flexWrap: "wrap",
+  justifyContent: "space-between",
+  alignItems: "center",
+  gap: 20,
+  marginBottom: 24,
+};
+
+const eyebrow: React.CSSProperties = {
+  color: "#ffd400",
+  fontSize: 12,
+  fontWeight: 900,
+  letterSpacing: 1,
+};
+
+const pageTitle: React.CSSProperties = {
+  margin: "8px 0 0",
+  fontSize: 34,
+  color: "white",
+};
+
+const topActions: React.CSSProperties = {
+  display: "flex",
   gap: 10,
 };
 
-const approveBtn: React.CSSProperties = {
-  padding: "10px 12px",
-  borderRadius: 10,
-  border: "1px solid rgba(34,197,94,0.35)",
-  background: "rgba(34,197,94,0.1)",
-  color: "#22c55e",
+const ghostBtn: React.CSSProperties = {
+  height: 42,
+  padding: "0 16px",
+  borderRadius: 12,
+  display: "grid",
+  placeItems: "center",
+  textDecoration: "none",
+  color: "#cbd5e1",
+  background: "rgba(255,255,255,0.04)",
+  border: "1px solid rgba(255,255,255,0.08)",
   fontWeight: 900,
-  cursor: "pointer",
 };
 
-const rejectBtn: React.CSSProperties = {
-  padding: "10px 12px",
-  borderRadius: 10,
-  border: "1px solid rgba(239,68,68,0.35)",
-  background: "rgba(239,68,68,0.1)",
-  color: "#ef4444",
-  fontWeight: 900,
-  cursor: "pointer",
-};
-
-const pendingBtn: React.CSSProperties = {
-  padding: "10px 12px",
-  borderRadius: 10,
-  border: "1px solid rgba(255,212,0,0.35)",
-  background: "rgba(255,212,0,0.1)",
+const refreshBtn: React.CSSProperties = {
+  height: 42,
+  padding: "0 16px",
+  borderRadius: 12,
+  border: "1px solid rgba(255,212,0,0.28)",
+  background: "rgba(255,212,0,0.08)",
   color: "#ffd400",
   fontWeight: 900,
   cursor: "pointer",
 };
 
-const deleteBtn: React.CSSProperties = {
-  padding: "10px 12px",
-  borderRadius: 10,
-  border: "1px solid rgba(148,163,184,0.35)",
-  background: "rgba(148,163,184,0.08)",
-  color: "#cbd5e1",
-  fontWeight: 900,
-  cursor: "pointer",
+const content: React.CSSProperties = {
+  minWidth: 0,
 };
