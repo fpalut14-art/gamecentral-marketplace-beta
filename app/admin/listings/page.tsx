@@ -1,289 +1,295 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
-import { collection, getDocs } from "firebase/firestore";
+import {
+  addDoc,
+  collection,
+  deleteDoc,
+  doc,
+  getDocs,
+  updateDoc,
+} from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import { Product, ProductStatus } from "@/types";
+import { money } from "@/lib/format";
 
-type Stats = {
-  users: number;
-  activeProducts: number;
-  pendingProducts: number;
-  rejectedProducts: number;
-  ads: number;
-  orders: number;
-  volume: number;
-};
+const tabs: { key: "all" | ProductStatus; label: string }[] = [
+  { key: "all", label: "Tümü" },
+  { key: "pending", label: "Onay Bekleyen" },
+  { key: "active", label: "Aktif" },
+  { key: "rejected", label: "Reddedilen" },
+];
 
-type ActivityItem = {
-  id: string;
-  type: "product" | "order" | "ad" | "user";
-  title: string;
-  status?: string;
-  createdAt?: string;
-};
-
-export default function AdminDashboardPage() {
-  const [stats, setStats] = useState<Stats>({
-    users: 0,
-    activeProducts: 0,
-    pendingProducts: 0,
-    rejectedProducts: 0,
-    ads: 0,
-    orders: 0,
-    volume: 0,
-  });
-
-  const [activities, setActivities] = useState<ActivityItem[]>([]);
+export default function AdminListings() {
+  const [products, setProducts] = useState<Product[]>([]);
+  const [activeTab, setActiveTab] = useState<"all" | ProductStatus>("all");
+  const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
 
-  async function loadDashboardStats() {
+  async function load() {
     try {
       setLoading(true);
 
-      const [usersSnap, productsSnap, adsSnap, ordersSnap] = await Promise.all([
-        getDocs(collection(db, "users")),
-        getDocs(collection(db, "products")),
-        getDocs(collection(db, "ads")),
-        getDocs(collection(db, "orders")),
-      ]);
+      const snap = await getDocs(collection(db, "products"));
 
-      const products = productsSnap.docs.map((item) => ({
-        id: item.id,
-        ...item.data(),
-      })) as any[];
-
-      const orders = ordersSnap.docs.map((item) => ({
-        id: item.id,
-        ...item.data(),
-      })) as any[];
-
-      const ads = adsSnap.docs.map((item) => ({
-        id: item.id,
-        ...item.data(),
-      })) as any[];
-
-      const users = usersSnap.docs.map((item) => ({
-        id: item.id,
-        ...item.data(),
-      })) as any[];
-
-      const activeProducts = products.filter((p) => p.status === "active").length;
-      const pendingProducts = products.filter((p) => p.status === "pending").length;
-      const rejectedProducts = products.filter((p) => p.status === "rejected").length;
-
-      const volume = orders.reduce((total, order) => {
-        return total + Number(order.amount || 0);
-      }, 0);
-
-      const recentProducts: ActivityItem[] = products.slice(0, 5).map((p) => ({
-        id: p.id,
-        type: "product",
-        title: p.title || "Başlıksız ilan",
-        status: p.status,
-        createdAt: p.createdAt,
-      }));
-
-      const recentOrders: ActivityItem[] = orders.slice(0, 5).map((o) => ({
-        id: o.id,
-        type: "order",
-        title: o.productTitle || "Sipariş",
-        status: o.status,
-        createdAt: o.createdAt,
-      }));
-
-      const recentAds: ActivityItem[] = ads.slice(0, 3).map((a) => ({
-        id: a.id,
-        type: "ad",
-        title: a.title || a.brand || "Reklam",
-        status: a.status,
-        createdAt: a.createdAt,
-      }));
-
-      const recentUsers: ActivityItem[] = users.slice(0, 3).map((u) => ({
-        id: u.id,
-        type: "user",
-        title: u.email || u.name || "Kullanıcı",
-        status: u.role,
-        createdAt: u.createdAt,
-      }));
-
-      setActivities(
-        [...recentProducts, ...recentOrders, ...recentAds, ...recentUsers]
-          .sort((a, b) =>
-            String(b.createdAt || "").localeCompare(String(a.createdAt || ""))
-          )
-          .slice(0, 10)
+      setProducts(
+        snap.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        })) as Product[]
       );
-
-      setStats({
-        users: usersSnap.size,
-        activeProducts,
-        pendingProducts,
-        rejectedProducts,
-        ads: adsSnap.size,
-        orders: ordersSnap.size,
-        volume,
-      });
     } catch (error) {
-      console.error("Dashboard veri hatası:", error);
-      alert("Dashboard verileri çekilemedi.");
+      console.error("İlanlar çekilemedi:", error);
+      alert("İlanlar çekilemedi.");
     } finally {
       setLoading(false);
     }
   }
 
+  async function changeStatus(product: Product, nextStatus: ProductStatus) {
+    try {
+      await updateDoc(doc(db, "products", product.id), {
+        status: nextStatus,
+        updatedAt: new Date().toISOString(),
+      });
+
+      if (product.sellerId) {
+        await addDoc(collection(db, "notifications"), {
+          userId: product.sellerId,
+          title:
+            nextStatus === "active"
+              ? "İlanın onaylandı"
+              : nextStatus === "rejected"
+              ? "İlanın reddedildi"
+              : "İlanın askıya alındı",
+          message: `${product.title || "İlan"} durumu: ${nextStatus}`,
+          read: false,
+          type: "listing",
+          createdAt: new Date().toISOString(),
+        });
+      }
+
+      await load();
+    } catch (error) {
+      console.error("İlan durumu güncellenemedi:", error);
+      alert("İlan durumu güncellenemedi.");
+    }
+  }
+
+  async function remove(product: Product) {
+    const ok = confirm(`"${product.title || "Bu ilan"}" silinsin mi?`);
+
+    if (!ok) return;
+
+    try {
+      await deleteDoc(doc(db, "products", product.id));
+      await load();
+    } catch (error) {
+      console.error("İlan silinemedi:", error);
+      alert("İlan silinemedi.");
+    }
+  }
+
   useEffect(() => {
-    loadDashboardStats();
+    load();
   }, []);
 
-  const approvalRate = useMemo(() => {
-    const total =
-      stats.activeProducts + stats.pendingProducts + stats.rejectedProducts;
+  const filteredProducts = useMemo(() => {
+    const q = search.toLowerCase().trim();
 
-    if (total === 0) return 0;
+    return products.filter((product) => {
+      const tabMatch = activeTab === "all" || product.status === activeTab;
 
-    return Math.round((stats.activeProducts / total) * 100);
-  }, [stats]);
+      const searchMatch =
+        !q ||
+        String(product.title || "").toLowerCase().includes(q) ||
+        String(product.category || "").toLowerCase().includes(q) ||
+        String(product.seller || "").toLowerCase().includes(q);
+
+      return tabMatch && searchMatch;
+    });
+  }, [products, activeTab, search]);
+
+  const pendingCount = products.filter((p) => p.status === "pending").length;
+  const activeCount = products.filter((p) => p.status === "active").length;
+  const rejectedCount = products.filter((p) => p.status === "rejected").length;
 
   return (
     <div>
       <section style={hero}>
         <div>
-          <span style={eyebrow}>ADMIN OVERVIEW</span>
-          <h1 style={title}>GameCentral Yönetim Merkezi</h1>
+          <span style={eyebrow}>ADMIN LISTING CONTROL</span>
+          <h1 style={title}>İlan Yönetimi</h1>
           <p style={muted}>
-            Kullanıcıları, ilanları, siparişleri, reklamları ve sistem akışını
-            tek panelden takip et.
+            Bekleyen, aktif ve reddedilen ilanları incele. Satıcıya otomatik
+            bildirim gönder.
           </p>
         </div>
 
-        <div style={heroActions}>
-          <Link href="/admin/listings" style={primaryAction}>
-            Bekleyen İlanlar
-          </Link>
-
-          <button onClick={loadDashboardStats} style={refresh}>
-            {loading ? "Yükleniyor..." : "Verileri Yenile"}
-          </button>
-        </div>
+        <button type="button" onClick={load} style={refreshBtn}>
+          {loading ? "Yükleniyor..." : "Yenile"}
+        </button>
       </section>
+
+      <section style={statGrid}>
+        <MiniStat label="Toplam İlan" value={products.length} />
+        <MiniStat label="Onay Bekleyen" value={pendingCount} />
+        <MiniStat label="Aktif" value={activeCount} />
+        <MiniStat label="Reddedilen" value={rejectedCount} />
+      </section>
+
+      <section style={toolbar}>
+        <div style={tabsWrap}>
+          {tabs.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setActiveTab(tab.key)}
+              style={activeTab === tab.key ? tabActive : tabBtn}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="İlan, kategori veya satıcı ara..."
+          style={searchInput}
+        />
+      </section>
+
+      {loading && <div style={empty}>İlanlar yükleniyor...</div>}
+
+      {!loading && filteredProducts.length === 0 && (
+        <div style={empty}>Bu filtreye uygun ilan bulunamadı.</div>
+      )}
 
       <section style={grid}>
-        <StatCard label="Toplam Kullanıcı" value={stats.users} icon="👥" />
-        <StatCard label="Aktif İlan" value={stats.activeProducts} icon="📦" />
-        <StatCard label="Onay Bekleyen" value={stats.pendingProducts} icon="⏳" />
-        <StatCard label="Reddedilen İlan" value={stats.rejectedProducts} icon="🚫" />
-        <StatCard label="Reklam Başvurusu" value={stats.ads} icon="📢" />
-        <StatCard label="Sipariş Talebi" value={stats.orders} icon="💳" />
-        <StatCard label="Beta Hacim" value={`₺${stats.volume}`} icon="💰" />
-        <StatCard label="Onay Oranı" value={`%${approvalRate}`} icon="📈" />
-      </section>
+        {!loading &&
+          filteredProducts.map((product) => {
+            const productImage = product.imageUrl || product.imageBase64 || "";
 
-      <section style={lowerGrid}>
-        <div style={panel}>
-          <div style={panelHead}>
-            <div>
-              <h2 style={panelTitle}>Hızlı Yönetim</h2>
-              <p style={muted}>En sık kullanılan admin işlemleri.</p>
-            </div>
-          </div>
+            return (
+              <article key={product.id} style={card}>
+                <div style={imageBox}>
+                  {productImage ? (
+                    <img
+                      src={productImage}
+                      alt={product.title || "İlan"}
+                      style={image}
+                    />
+                  ) : (
+                    <div style={placeholder}>GAMECENTRAL</div>
+                  )}
 
-          <div style={quickGrid}>
-            <QuickLink href="/admin/users" title="Kullanıcıları Yönet" desc="Rol, ban ve kullanıcı takibi." />
-            <QuickLink href="/admin/listings" title="İlanları İncele" desc="Bekleyen, aktif ve reddedilen ilanlar." />
-            <QuickLink href="/admin/orders" title="Siparişleri Gör" desc="Beta işlem ve talep kayıtları." />
-            <QuickLink href="/admin/ads" title="Reklamları Yönet" desc="Slider, banner ve partner slotları." />
-            <QuickLink href="/admin/reports" title="Raporları İncele" desc="Şikayet ve güvenlik bildirimleri." />
-            <QuickLink href="/admin/logs" title="Sistem Logları" desc="Admin aksiyon ve olay kayıtları." />
-          </div>
-        </div>
+                  <span style={getStatusStyle(product.status)}>
+                    {getStatusLabel(product.status)}
+                  </span>
+                </div>
 
-        <div style={panel}>
-          <div style={panelHead}>
-            <div>
-              <h2 style={panelTitle}>Son Hareketler</h2>
-              <p style={muted}>Son ürün, sipariş, reklam ve kullanıcı kayıtları.</p>
-            </div>
-          </div>
+                <div style={body}>
+                  <span style={category}>
+                    {product.category || "Kategori yok"}
+                  </span>
 
-          <div style={activityList}>
-            {loading && <div style={empty}>Veriler yükleniyor...</div>}
+                  <h3 style={cardTitle}>
+                    {product.title || "Başlıksız İlan"}
+                  </h3>
 
-            {!loading && activities.length === 0 && (
-              <div style={empty}>Henüz hareket yok.</div>
-            )}
+                  <p style={seller}>
+                    Satıcı: {product.seller || "Bilinmeyen satıcı"}
+                  </p>
 
-            {!loading &&
-              activities.map((item) => (
-                <div key={`${item.type}-${item.id}`} style={activityItem}>
-                  <div style={activityIcon}>{getActivityIcon(item.type)}</div>
+                  <strong style={price}>{money(product.price)}</strong>
 
-                  <div style={{ minWidth: 0 }}>
-                    <strong style={activityTitle}>{item.title}</strong>
-                    <p style={activityMeta}>
-                      {getActivityLabel(item.type)} • {item.status || "durum yok"}
-                    </p>
+                  {product.description && (
+                    <p style={desc}>{product.description}</p>
+                  )}
+
+                  <div style={actions}>
+                    <button
+                      type="button"
+                      onClick={() => changeStatus(product, "active")}
+                      style={approveBtn}
+                    >
+                      Onayla
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => changeStatus(product, "rejected")}
+                      style={rejectBtn}
+                    >
+                      Reddet
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => changeStatus(product, "pending")}
+                      style={pendingBtn}
+                    >
+                      Askıya Al
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => remove(product)}
+                      style={deleteBtn}
+                    >
+                      Sil
+                    </button>
                   </div>
                 </div>
-              ))}
-          </div>
-        </div>
+              </article>
+            );
+          })}
       </section>
     </div>
   );
 }
 
-function StatCard({
-  label,
-  value,
-  icon,
-}: {
-  label: string;
-  value: number | string;
-  icon: string;
-}) {
+function MiniStat({ label, value }: { label: string; value: number }) {
   return (
-    <div style={card}>
-      <div style={cardTop}>
-        <span style={statIcon}>{icon}</span>
-        <span style={labelStyle}>{label}</span>
-      </div>
-
-      <strong style={number}>{value}</strong>
+    <div style={miniStat}>
+      <span style={muted}>{label}</span>
+      <strong style={miniNumber}>{value}</strong>
     </div>
   );
 }
 
-function QuickLink({
-  href,
-  title,
-  desc,
-}: {
-  href: string;
-  title: string;
-  desc: string;
-}) {
-  return (
-    <Link href={href} style={quickLink}>
-      <strong>{title}</strong>
-      <span>{desc}</span>
-    </Link>
-  );
+function getStatusLabel(status?: ProductStatus) {
+  if (status === "active") return "Aktif";
+  if (status === "rejected") return "Reddedildi";
+  return "Bekliyor";
 }
 
-function getActivityIcon(type: ActivityItem["type"]) {
-  if (type === "product") return "📦";
-  if (type === "order") return "💳";
-  if (type === "ad") return "📢";
-  return "👤";
-}
+function getStatusStyle(status?: ProductStatus): React.CSSProperties {
+  if (status === "active") {
+    return {
+      ...statusBadge,
+      color: "#22c55e",
+      background: "rgba(34,197,94,0.12)",
+      border: "1px solid rgba(34,197,94,0.25)",
+    };
+  }
 
-function getActivityLabel(type: ActivityItem["type"]) {
-  if (type === "product") return "İlan";
-  if (type === "order") return "Sipariş";
-  if (type === "ad") return "Reklam";
-  return "Kullanıcı";
+  if (status === "rejected") {
+    return {
+      ...statusBadge,
+      color: "#ef4444",
+      background: "rgba(239,68,68,0.12)",
+      border: "1px solid rgba(239,68,68,0.25)",
+    };
+  }
+
+  return {
+    ...statusBadge,
+    color: "#ffd400",
+    background: "rgba(255,212,0,0.12)",
+    border: "1px solid rgba(255,212,0,0.25)",
+  };
 }
 
 const hero: React.CSSProperties = {
@@ -294,9 +300,9 @@ const hero: React.CSSProperties = {
   border: "1px solid rgba(255,255,255,0.08)",
   display: "flex",
   justifyContent: "space-between",
-  gap: 24,
   alignItems: "center",
-  marginBottom: 24,
+  gap: 20,
+  marginBottom: 20,
 };
 
 const eyebrow: React.CSSProperties = {
@@ -307,35 +313,15 @@ const eyebrow: React.CSSProperties = {
 };
 
 const title: React.CSSProperties = {
-  fontSize: 40,
   margin: "10px 0 8px",
+  fontSize: 40,
 };
 
 const muted: React.CSSProperties = {
   color: "#94a3b8",
-  lineHeight: 1.6,
 };
 
-const heroActions: React.CSSProperties = {
-  display: "flex",
-  gap: 12,
-  flexWrap: "wrap",
-  justifyContent: "flex-end",
-};
-
-const primaryAction: React.CSSProperties = {
-  height: 46,
-  padding: "0 16px",
-  borderRadius: 14,
-  background: "#ffd400",
-  color: "#05060f",
-  display: "grid",
-  placeItems: "center",
-  textDecoration: "none",
-  fontWeight: 900,
-};
-
-const refresh: React.CSSProperties = {
+const refreshBtn: React.CSSProperties = {
   height: 46,
   padding: "0 16px",
   borderRadius: 14,
@@ -346,134 +332,200 @@ const refresh: React.CSSProperties = {
   cursor: "pointer",
 };
 
-const grid: React.CSSProperties = {
+const statGrid: React.CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-  gap: 18,
-};
-
-const card: React.CSSProperties = {
-  padding: 22,
-  borderRadius: 20,
-  background:
-    "linear-gradient(180deg, rgba(16,24,39,0.96), rgba(7,10,18,0.96))",
-  border: "1px solid rgba(255,255,255,0.08)",
-  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
   gap: 14,
-  boxShadow: "0 18px 60px rgba(0,0,0,0.18)",
+  marginBottom: 20,
 };
 
-const cardTop: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 10,
-};
-
-const statIcon: React.CSSProperties = {
-  width: 40,
-  height: 40,
-  borderRadius: 14,
-  background: "rgba(255,212,0,0.1)",
-  display: "grid",
-  placeItems: "center",
-};
-
-const labelStyle: React.CSSProperties = {
-  color: "#94a3b8",
-  fontWeight: 800,
-};
-
-const number: React.CSSProperties = {
-  color: "#ffd400",
-  fontSize: 36,
-};
-
-const lowerGrid: React.CSSProperties = {
-  marginTop: 24,
-  display: "grid",
-  gridTemplateColumns: "1.25fr 0.75fr",
-  gap: 20,
-};
-
-const panel: React.CSSProperties = {
-  padding: 24,
-  borderRadius: 24,
-  background: "#0f172a",
-  border: "1px solid rgba(255,255,255,0.08)",
-};
-
-const panelHead: React.CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  gap: 16,
-};
-
-const panelTitle: React.CSSProperties = {
-  color: "#ffd400",
-  margin: 0,
-};
-
-const quickGrid: React.CSSProperties = {
-  marginTop: 18,
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-  gap: 14,
-};
-
-const quickLink: React.CSSProperties = {
+const miniStat: React.CSSProperties = {
   padding: 18,
   borderRadius: 18,
-  background: "rgba(255,255,255,0.035)",
-  border: "1px solid rgba(255,255,255,0.06)",
-  color: "white",
-  textDecoration: "none",
+  background: "#0f172a",
+  border: "1px solid rgba(255,255,255,0.08)",
   display: "grid",
   gap: 8,
 };
 
-const activityList: React.CSSProperties = {
-  marginTop: 18,
-  display: "grid",
-  gap: 12,
+const miniNumber: React.CSSProperties = {
+  color: "#ffd400",
+  fontSize: 30,
 };
 
-const activityItem: React.CSSProperties = {
-  padding: 14,
-  borderRadius: 16,
-  background: "rgba(255,255,255,0.035)",
-  border: "1px solid rgba(255,255,255,0.06)",
+const toolbar: React.CSSProperties = {
+  padding: 16,
+  borderRadius: 20,
+  background: "#0f172a",
+  border: "1px solid rgba(255,255,255,0.08)",
   display: "flex",
-  gap: 12,
+  justifyContent: "space-between",
+  gap: 14,
   alignItems: "center",
+  marginBottom: 20,
 };
 
-const activityIcon: React.CSSProperties = {
-  width: 42,
+const tabsWrap: React.CSSProperties = {
+  display: "flex",
+  gap: 10,
+  flexWrap: "wrap",
+};
+
+const tabBtn: React.CSSProperties = {
   height: 42,
+  padding: "0 14px",
+  borderRadius: 12,
+  border: "1px solid rgba(255,255,255,0.08)",
+  background: "rgba(255,255,255,0.035)",
+  color: "#cbd5e1",
+  fontWeight: 900,
+  cursor: "pointer",
+};
+
+const tabActive: React.CSSProperties = {
+  ...tabBtn,
+  background: "#ffd400",
+  color: "#05060f",
+};
+
+const searchInput: React.CSSProperties = {
+  height: 44,
+  minWidth: 290,
   borderRadius: 14,
-  background: "rgba(255,212,0,0.1)",
-  display: "grid",
-  placeItems: "center",
-  flex: "0 0 auto",
-};
-
-const activityTitle: React.CSSProperties = {
+  border: "1px solid rgba(255,255,255,0.1)",
+  background: "#05060f",
   color: "white",
-  display: "block",
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
-};
-
-const activityMeta: React.CSSProperties = {
-  margin: "4px 0 0",
-  color: "#94a3b8",
-  fontSize: 13,
+  padding: "0 14px",
+  outline: "none",
+  fontWeight: 800,
 };
 
 const empty: React.CSSProperties = {
-  padding: 16,
-  borderRadius: 16,
+  padding: 20,
+  borderRadius: 18,
   background: "rgba(255,255,255,0.035)",
   color: "#94a3b8",
+};
+
+const grid: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
+  gap: 18,
+};
+
+const card: React.CSSProperties = {
+  borderRadius: 22,
+  overflow: "hidden",
+  background:
+    "linear-gradient(180deg, rgba(16,24,39,0.96), rgba(7,10,18,0.96))",
+  border: "1px solid rgba(255,255,255,0.08)",
+  boxShadow: "0 18px 60px rgba(0,0,0,0.18)",
+};
+
+const imageBox: React.CSSProperties = {
+  height: 190,
+  background:
+    "radial-gradient(circle, rgba(255,212,0,0.16), transparent 60%), #090b11",
+  display: "grid",
+  placeItems: "center",
+  color: "#ffd400",
+  fontWeight: 900,
+  position: "relative",
+  overflow: "hidden",
+};
+
+const image: React.CSSProperties = {
+  width: "100%",
+  height: "100%",
+  objectFit: "cover",
+};
+
+const placeholder: React.CSSProperties = {
+  color: "#ffd400",
+  letterSpacing: 1,
+};
+
+const statusBadge: React.CSSProperties = {
+  position: "absolute",
+  top: 14,
+  left: 14,
+  padding: "8px 11px",
+  borderRadius: 999,
+  fontWeight: 900,
+  fontSize: 12,
+  backdropFilter: "blur(10px)",
+};
+
+const body: React.CSSProperties = {
+  padding: 18,
+};
+
+const category: React.CSSProperties = {
+  color: "#38bdf8",
+  fontWeight: 900,
+  fontSize: 13,
+};
+
+const cardTitle: React.CSSProperties = {
+  margin: "10px 0 8px",
+  fontSize: 22,
+};
+
+const seller: React.CSSProperties = {
+  color: "#94a3b8",
+  fontWeight: 700,
+};
+
+const price: React.CSSProperties = {
+  color: "#ffd400",
+  fontSize: 28,
+  display: "block",
+  marginTop: 10,
+};
+
+const desc: React.CSSProperties = {
+  color: "#cbd5e1",
+  lineHeight: 1.5,
+  minHeight: 44,
+};
+
+const actions: React.CSSProperties = {
+  marginTop: 16,
+  display: "grid",
+  gridTemplateColumns: "1fr 1fr",
+  gap: 10,
+};
+
+const baseBtn: React.CSSProperties = {
+  height: 42,
+  borderRadius: 12,
+  border: "none",
+  fontWeight: 900,
+  cursor: "pointer",
+};
+
+const approveBtn: React.CSSProperties = {
+  ...baseBtn,
+  background: "#22c55e",
+  color: "white",
+};
+
+const rejectBtn: React.CSSProperties = {
+  ...baseBtn,
+  background: "#ef4444",
+  color: "white",
+};
+
+const pendingBtn: React.CSSProperties = {
+  ...baseBtn,
+  background: "rgba(255,212,0,0.12)",
+  color: "#ffd400",
+  border: "1px solid rgba(255,212,0,0.25)",
+};
+
+const deleteBtn: React.CSSProperties = {
+  ...baseBtn,
+  background: "rgba(239,68,68,0.08)",
+  color: "#ef4444",
+  border: "1px solid rgba(239,68,68,0.25)",
 };
